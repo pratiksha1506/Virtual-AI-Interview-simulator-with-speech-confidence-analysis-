@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin Dashboard — AI Interview Simulator</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<style>
+  .nav-tab-btn {
+    padding: 12px 24px;
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    color: #475569;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-right: 10px;
+  }
+
+  .nav-tab-btn:hover {
+    background: #f1f5f9;
+    color: #2563eb;
+    border-color: #93c5fd;
+    transform: translateY(-2px);
+  }
+
+  .nav-tab-btn.active {
+    background: linear-gradient(135deg, #2563eb, #4f46e5);
+    color: white;
+    border-color: transparent;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+  }
+
+  .nav-tab-btn span {
+    background: rgba(148, 163, 184, 0.2);
+    color: inherit;
+    padding: 3px 9px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .nav-tab-btn.active span {
+    background: rgba(255, 255, 255, 0.2);
+    color: white;
+  }
+</style>
+
+<body>
+<div class="container">
+  <div class="navbar">
+    <div>
+      <span class="eyebrow">Recruiter & Examiner Portal</span>
+      <h2 style="margin:2px 0 0 0;">Admin Management Console</h2>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;">
+      <a href="schedule-interview.html" class="btn btn-primary btn-sm">+ Schedule Interview</a>
+      <button class="btn btn-outline btn-sm" id="logoutBtn">Log out</button>
+    </div>
+  </div>
+
+  <div class="grid grid-4" style="margin-bottom:20px;">
+    <div class="card stat-card">
+      <div class="stat-num" id="statSeekers">0</div>
+      <div class="stat-label">Registered Candidates</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-num" id="statTotal">0</div>
+      <div class="stat-label">Total Interviews</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-num" id="statScheduled">0</div>
+      <div class="stat-label">Scheduled</div>
+    </div>
+    <div class="card stat-card">
+      <div class="stat-num" id="statCompleted">0</div>
+      <div class="stat-label">Completed Reports</div>
+    </div>
+  </div>
+
+  <!-- Question Scheduling Policy Card -->
+  <div class="card" style="margin-bottom:20px;border-left:4px solid var(--primary);">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <h3 style="margin:0;font-size:16px;">⚙️ Interview Question Scheduling & Policy</h3>
+        <p class="muted" style="margin:4px 0 0 0;font-size:12.5px;">
+          Configure the persistent default question count (1 to 50) for all newly scheduled and practice interview sessions.
+        </p>
+      </div>
+      <div id="settingsSaveStatus" class="badge badge-success" style="display:none;">Saved</div>
+    </div>
+    <form id="settingsForm" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <label for="defaultQuestionCount" style="font-weight:600;font-size:13.5px;">Default Question Count:</label>
+        <input type="number" id="defaultQuestionCount" min="1" max="50" class="form-control" style="width:90px;" value="10" required>
+      </div>
+      <button type="submit" id="saveSettingsBtn" class="btn btn-primary btn-sm">💾 Save Question Setting</button>
+    </form>
+  </div>
+
+  <!-- Separate Navigation Tabs for Requirement 1 -->
+  <div class="nav-tabs" role="tablist">
+    <button class="nav-tab-btn active" id="tabCandidatesBtn" onclick="switchAdminTab('candidates')">
+      👥 Candidates (<span id="tabCandCount">0</span>)
+    </button>
+    <button class="nav-tab-btn" id="tabHistoryBtn" onclick="switchAdminTab('history')">
+      📋 Interview History (<span id="tabHistCount">0</span>)
+    </button>
+  </div>
+
+  <!-- SECTION 1: Registered Candidates Directory -->
+  <div id="sectionCandidates" class="card" style="margin-bottom:20px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <h3 style="margin:0;font-size:16px;">Registered Candidates Directory</h3>
+        <p class="muted" style="margin:4px 0 0 0;font-size:12.5px;">
+          Official list of registered candidate accounts. Deleting interview records never deletes candidate accounts.
+        </p>
+      </div>
+      <a href="schedule-interview.html" class="btn btn-sm btn-outline">+ Schedule for Candidate</a>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Registered Date</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="candidatesBody">
+        <tr><td colspan="5" class="muted">Loading candidates…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- SECTION 2: Interview History -->
+  <div id="sectionHistory" class="card" style="margin-bottom:20px;display:none;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+      <div>
+        <h3 style="margin:0;font-size:16px;">Candidate Interview History & Reports</h3>
+        <p class="muted" style="margin:4px 0 0 0;font-size:12.5px;">
+          Previous interview records: view questions, candidate transcripts, evaluated scores, and comprehensive reports.
+        </p>
+      </div>
+      <button class="btn btn-sm btn-danger" id="clearAllHistoryBtn" onclick="clearAllHistory()">
+        🗑️ Clear All Interview History
+      </button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Candidate</th>
+          <th>Job Role</th>
+          <th>Focus</th>
+          <th>Score</th>
+          <th>Status</th>
+          <th>Date</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="interviewsBody">
+        <tr><td colspan="7" class="muted">Loading interview records…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Modal: View Questions, Answers & Scores for an Interview Record -->
+<div id="detailModal" class="modal-overlay" style="display:none;">
+  <div class="modal-card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;border-bottom:1px solid var(--glass-border);padding-bottom:10px;">
+      <div>
+        <span class="eyebrow">Interview Record Details</span>
+        <h3 id="modalTitle" style="margin:4px 0;">Candidate Interview Details</h3>
+        <div class="muted" id="modalMeta" style="font-size:12.5px;"></div>
+      </div>
+      <button class="btn btn-outline btn-sm" onclick="closeDetailModal()">✕ Close</button>
+    </div>
+
+    <!-- Scores Summary Banner -->
+    <div id="modalScoreBanner" style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;"></div>
+
+    <!-- Questions and Answers Container -->
+    <h4 style="margin-bottom:8px;font-size:14.5px;">Questions Asked & Candidate Responses:</h4>
+    <div id="modalQAContent" style="display:flex;flex-direction:column;gap:12px;"></div>
+
+    <div style="margin-top:18px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--glass-border);padding-top:12px;">
+      <div id="modalReportLink"></div>
+      <button class="btn btn-outline btn-sm" onclick="closeDetailModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/theme.js"></script>
+<script>
+let allCandidatesCache = [];
+let allInterviewsCache = [];
+
+function switchAdminTab(tabName) {
+  const candTabBtn = document.getElementById("tabCandidatesBtn");
+  const histTabBtn = document.getElementById("tabHistoryBtn");
+  const candSec = document.getElementById("sectionCandidates");
+  const histSec = document.getElementById("sectionHistory");
+
+  if (tabName === "candidates") {
+    candTabBtn.className = "nav-tab-btn active";
+    histTabBtn.className = "nav-tab-btn";
+    candSec.style.display = "block";
+    histSec.style.display = "none";
+    window.location.hash = "candidates";
+  } else {
+    candTabBtn.className = "nav-tab-btn";
+    histTabBtn.className = "nav-tab-btn active";
+    candSec.style.display = "none";
+    histSec.style.display = "block";
+    window.location.hash = "history";
+  }
+}
+
+document.addEventListener("DOMContentLoaded", async () => {
+  const admin = await Api.requireAuth("admin");
+  if (!admin) return;
+
+  // Restore tab from URL hash if provided
+  if (window.location.hash === "#history") {
+    switchAdminTab("history");
+  } else {
+    switchAdminTab("candidates");
+  }
+
+  await loadDashboardData();
+
+  // Load question settings
+  try {
+    const settings = await Api.getAdminSettings();
+    if (settings && settings.default_question_count) {
+      document.getElementById("defaultQuestionCount").value = settings.default_question_count;
+    }
+  } catch (err) {
+    console.warn("Could not load admin settings:", err);
+  }
+
+  // Save question settings
+  document.getElementById("settingsForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const saveBtn = document.getElementById("saveSettingsBtn");
+    const status = document.getElementById("settingsSaveStatus");
+    const countVal = parseInt(document.getElementById("defaultQuestionCount").value, 10);
+    if (isNaN(countVal) || countVal < 1 || countVal > 50) {
+      alert("Please specify a valid question count between 1 and 50.");
+      return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = "Saving…";
+    try {
+      await Api.updateAdminSettings({ key: "default_question_count", value: countVal });
+      status.textContent = `✓ Saved (${countVal} questions)`;
+      status.style.display = "inline-block";
+      setTimeout(() => { status.style.display = "none"; }, 4000);
+    } catch (err) {
+      alert("Failed to save setting: " + (err.message || err));
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "💾 Save Question Setting";
+    }
+  });
+
+  document.getElementById("logoutBtn").addEventListener("click", () => {
+    Api.logout();
+  });
+});
+
+async function loadDashboardData() {
+  try {
+    const data = await Api.getAdminDashboard();
+    const stats = data.stats;
+    const candidates = data.candidates || [];
+    const interviews = data.interviews || [];
+    allCandidatesCache = candidates;
+    allInterviewsCache = interviews;
+
+    document.getElementById("statSeekers").textContent = stats.seekers_count;
+    document.getElementById("statTotal").textContent = stats.total_interviews;
+    document.getElementById("statScheduled").textContent = stats.scheduled_count;
+    document.getElementById("statCompleted").textContent = stats.completed_count;
+    document.getElementById("tabCandCount").textContent = candidates.length;
+    document.getElementById("tabHistCount").textContent = interviews.length;
+
+    // Render Candidates
+    renderCandidates(candidates);
+
+    // Render Interviews History
+    renderInterviews(interviews);
+  } catch (err) {
+    console.error("Admin dashboard load error:", err);
+  }
+}
+
+function renderCandidates(candidates) {
+  const tbody = document.getElementById("candidatesBody");
+  if (!candidates.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted text-center" style="padding:24px;">No registered candidates found.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = candidates.map(c => `
+    <tr>
+      <td><strong>${escapeHtml(c.name)}</strong></td>
+      <td>${escapeHtml(c.email)}</td>
+      <td><span class="badge badge-secondary">Candidate</span></td>
+      <td>${new Date(c.created_at).toLocaleDateString()}</td>
+      <td>
+        <div style="display:flex;gap:6px;">
+          <a href="admin-candidate-detail.html?id=${c.id}" class="btn btn-sm btn-outline">View Profile</a>
+          <a href="schedule-interview.html" class="btn btn-sm btn-primary">Schedule</a>
+        </div>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function renderInterviews(interviews) {
+  const tbody = document.getElementById("interviewsBody");
+  if (!interviews.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="muted text-center" style="padding:24px;">No candidate interview records in the system.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = interviews.map(i => {
+    const isCompleted = i.status === "completed";
+    let badgeClass = "badge-secondary";
+    let statusLabel = i.status;
+
+    if (i.status === "completed") {
+      badgeClass = "badge-success";
+      statusLabel = "Completed";
+    } else if (i.status === "scheduled") {
+      badgeClass = "badge-info";
+      statusLabel = "Scheduled";
+    } else if (i.status === "in_progress") {
+      badgeClass = "badge-warning";
+      statusLabel = "In Progress";
+    } else if (i.status === "cancelled") {
+      badgeClass = "badge-danger";
+      statusLabel = "Cancelled";
+    } else if (i.status === "missed" || i.status === "not_attended") {
+      badgeClass = "badge-secondary";
+      statusLabel = "Not Attended";
+    }
+
+    // Calculated score display: strictly null/dash if not completed
+    const scoreVal = isCompleted && (i.final_score !== null && i.final_score !== undefined ? i.final_score : i.score);
+    const scoreDisplay = (isCompleted && scoreVal !== null && scoreVal !== undefined)
+      ? `<strong style="color:var(--grad-start);">${scoreVal}%</strong>`
+      : `<span class="muted">—</span>`;
+
+    const reportBtn = isCompleted 
+      ? `<a href="report.html?id=${i.id}" class="btn btn-sm btn-outline">Report</a>` 
+      : "";
+
+    const notAttendedBtn = (i.status === "scheduled" || i.status === "in_progress")
+      ? `<button class="btn btn-sm btn-outline" style="font-size:11.5px;" onclick="markNotAttendedSession(${i.id})">Mark Not Attended</button>`
+      : "";
+
+    const cancelBtn = i.status === "scheduled"
+      ? `<button class="btn btn-sm btn-outline" style="color:var(--warning);" onclick="cancelSession(${i.id})">Cancel</button>`
+      : "";
+
+    const deleteBtn = `<button class="btn btn-sm btn-danger" title="Delete only this interview record (preserves candidate account)" onclick="deleteSession(${i.id})">Delete</button>`;
+
+    return `
+      <tr>
+        <td><strong>${escapeHtml(i.candidate_name || 'Candidate')}</strong><br><span class="muted" style="font-size:11.5px;">${escapeHtml(i.candidate_email || '')}</span></td>
+        <td>${escapeHtml(i.job_role)}</td>
+        <td>${escapeHtml(i.interview_type)}</td>
+        <td>${scoreDisplay}</td>
+        <td><span class="badge ${badgeClass}">${statusLabel}</span></td>
+        <td>${new Date(i.created_at).toLocaleDateString()}</td>
+        <td>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+            <button class="btn btn-sm btn-primary" onclick="viewInterviewDetails(${i.id})">Q&A Details</button>
+            ${reportBtn}
+            ${notAttendedBtn}
+            ${cancelBtn}
+            ${deleteBtn}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function viewInterviewDetails(interviewId) {
+  try {
+    const details = await Api.getAdminInterviewDetails(interviewId);
+    const interview = details.interview;
+    const candidate = details.candidate || {};
+    const questions = details.questions || [];
+    const responses = details.responses || [];
+    const report = details.report;
+
+    document.getElementById("modalTitle").textContent = `${interview.job_role} Mock Interview`;
+    document.getElementById("modalMeta").innerHTML = `
+      <strong>Candidate:</strong> ${escapeHtml(candidate.name || 'Candidate')} (${escapeHtml(candidate.email || '')}) &nbsp;|&nbsp;
+      <strong>Status:</strong> ${interview.status.toUpperCase()} &nbsp;|&nbsp;
+      <strong>Questions Configured:</strong> ${interview.question_count} &nbsp;|&nbsp;
+      <strong>Date:</strong> ${new Date(interview.created_at).toLocaleString()}
+    `;
+
+    // Score Banner
+    const scoreBanner = document.getElementById("modalScoreBanner");
+    if (report) {
+      scoreBanner.innerHTML = `
+        <div class="card stat-card" style="padding:10px 14px;margin-bottom:0;flex:1;">
+          <div class="stat-num" style="font-size:20px;color:var(--grad-start);">${report.overall_score}%</div>
+          <div class="stat-label" style="font-size:11px;">Overall Score</div>
+        </div>
+        <div class="card stat-card" style="padding:10px 14px;margin-bottom:0;flex:1;">
+          <div class="stat-num" style="font-size:20px;">${report.technical_score}%</div>
+          <div class="stat-label" style="font-size:11px;">Technical</div>
+        </div>
+        <div class="card stat-card" style="padding:10px 14px;margin-bottom:0;flex:1;">
+          <div class="stat-num" style="font-size:20px;">${report.communication_score}%</div>
+          <div class="stat-label" style="font-size:11px;">Communication</div>
+        </div>
+      `;
+    } else {
+      scoreBanner.innerHTML = `
+        <div class="muted" style="font-size:13px;padding:6px 0;">
+          Status: <strong>${interview.status}</strong> &nbsp;·&nbsp;
+          Answers Recorded: <strong>${responses.length} / ${interview.question_count}</strong> &nbsp;·&nbsp;
+          Final evaluation report not generated yet.
+        </div>
+      `;
+    }
+
+    // QA List
+    const qaContent = document.getElementById("modalQAContent");
+    if (!questions.length) {
+      qaContent.innerHTML = `<p class="muted">No questions have been initiated yet for this scheduled interview.</p>`;
+    } else {
+      qaContent.innerHTML = questions.map((q, idx) => {
+        const resp = responses.find(r => r.question_id === q.id) || responses[idx];
+        const hasAnswer = Boolean(resp && resp.transcript);
+        const transcriptText = hasAnswer ? resp.transcript : "(Candidate has not answered this question yet)";
+        const qScore = (resp && resp.overall_score !== undefined) ? `<span class="badge badge-success">${resp.overall_score}% Score</span>` : "";
+
+        return `
+          <div style="border:1px solid var(--glass-border);border-radius:10px;padding:12px;background:rgba(255,255,255,0.03);">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;">
+              <strong style="color:var(--text-dark);">Q${q.sequence_num || (idx + 1)}: ${escapeHtml(q.question_text)}</strong>
+              ${qScore}
+            </div>
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Topic: ${escapeHtml(q.topic || 'General')} · Focus: ${escapeHtml(q.question_type || interview.interview_type)}</div>
+            <div style="background:rgba(0,0,0,0.03);padding:8px 10px;border-radius:6px;font-size:13px;">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--text-muted);margin-bottom:2px;">Candidate Answer:</div>
+              <div style="font-style:italic;line-height:1.4;">"${escapeHtml(transcriptText)}"</div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    // Full Report Link
+    const reportLinkContainer = document.getElementById("modalReportLink");
+    if (interview.status === "completed" && report) {
+      reportLinkContainer.innerHTML = `<a href="report.html?id=${interview.id}" target="_blank" class="btn btn-sm btn-primary">Open Full Candidate Report ↗</a>`;
+    } else {
+      reportLinkContainer.innerHTML = "";
+    }
+
+    document.getElementById("detailModal").style.display = "flex";
+  } catch (err) {
+    alert("Failed to load interview details: " + err.message);
+  }
+}
+
+function closeDetailModal() {
+  document.getElementById("detailModal").style.display = "none";
+}
+
+async function deleteSession(id) {
+  if (confirm(`Are you sure you want to delete interview record #${id}?\n\nNOTE: This will delete the interview questions, answers, and report. The registered candidate's account will NOT be deleted.`)) {
+    try {
+      await Api.deleteInterview(id);
+      await loadDashboardData();
+    } catch (e) {
+      alert("Error deleting interview record: " + e.message);
+    }
+  }
+}
+
+async function clearAllHistory() {
+  if (confirm("Are you sure you want to remove ALL interview history records from the system?\n\nIMPORTANT: Registered candidate accounts will remain safe and intact.")) {
+    try {
+      const res = await Api.clearAllInterviewHistory();
+      alert(res.message || "All interview history records removed.");
+      await loadDashboardData();
+    } catch (e) {
+      alert("Error clearing history: " + e.message);
+    }
+  }
+}
+
+async function markNotAttendedSession(id) {
+  if (confirm("Mark this interview session as 'Not Attended'?")) {
+    try {
+      await Api.markNotAttended(id);
+      await loadDashboardData();
+    } catch (e) {
+      alert("Error marking as Not Attended: " + e.message);
+    }
+  }
+}
+
+async function cancelSession(id) {
+  if (confirm("Are you sure you want to cancel this scheduled interview?")) {
+    try {
+      await Api.cancelInterview(id);
+      await loadDashboardData();
+    } catch (e) {
+      alert("Error cancelling interview: " + e.message);
+    }
+  }
+}
+
+function escapeHtml(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+</script>
+</body>
+</html>

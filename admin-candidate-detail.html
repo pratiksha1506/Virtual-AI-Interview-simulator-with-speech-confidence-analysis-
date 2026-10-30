@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Candidate Profile Detail — Admin Portal</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="container">
+  <div class="navbar">
+    <div>
+      <a href="admin-dashboard.html" class="btn btn-outline btn-sm">← Back to Admin Console</a>
+      <h2 id="candidateName" style="margin:8px 0 0 0;">Candidate Profile</h2>
+      <p class="muted" id="candidateMeta" style="margin:4px 0 0 0;font-size:13px;"></p>
+    </div>
+    <div>
+      <a href="schedule-interview.html" class="btn btn-primary btn-sm">+ Schedule Interview</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <div>
+        <h3 style="margin:0;font-size:16px;">Candidate's Mock Interview Records</h3>
+        <p class="muted" style="margin:4px 0 0 0;font-size:12px;">Deleting an interview record here will not delete the candidate account.</p>
+      </div>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Target Role</th>
+          <th>Interview Focus</th>
+          <th>Status</th>
+          <th>Date</th>
+          <th>Score</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="interviewsBody">
+        <tr><td colspan="6" class="muted">Loading interview records…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/theme.js"></script>
+<script>
+let currentCandidateId = null;
+
+document.addEventListener("DOMContentLoaded", async () => {
+  const admin = await Api.requireAuth("admin");
+  if (!admin) return;
+
+  const params = new URLSearchParams(window.location.search);
+  currentCandidateId = params.get("id");
+  if (!currentCandidateId) {
+    window.location.href = "admin-dashboard.html";
+    return;
+  }
+
+  await loadCandidateDetail();
+});
+
+async function loadCandidateDetail() {
+  try {
+    const data = await Api.getAdminCandidate(currentCandidateId);
+    const candidate = data.candidate;
+    const interviews = data.interviews || [];
+
+    document.getElementById("candidateName").textContent = candidate.name;
+    document.getElementById("candidateMeta").textContent = `${candidate.email} · Member since ${new Date(candidate.created_at).toLocaleDateString()}`;
+
+    document.getElementById("interviewsBody").innerHTML = interviews.length ? interviews.map(i => {
+      const isCompleted = i.status === "completed";
+      let badgeClass = "badge-secondary";
+      let statusLabel = i.status;
+
+      if (i.status === "completed") {
+        badgeClass = "badge-success";
+        statusLabel = "Completed";
+      } else if (i.status === "scheduled") {
+        badgeClass = "badge-info";
+        statusLabel = "Scheduled";
+      } else if (i.status === "in_progress") {
+        badgeClass = "badge-warning";
+        statusLabel = "In Progress";
+      } else if (i.status === "cancelled") {
+        badgeClass = "badge-danger";
+        statusLabel = "Cancelled";
+      } else if (i.status === "missed" || i.status === "not_attended") {
+        badgeClass = "badge-secondary";
+        statusLabel = "Not Attended";
+      }
+
+      const scoreVal = isCompleted && (i.final_score !== null && i.final_score !== undefined ? i.final_score : i.score);
+      const scoreDisplay = (isCompleted && scoreVal !== null && scoreVal !== undefined)
+        ? `<strong style="color:var(--grad-start);">${scoreVal}%</strong>`
+        : `<span class="muted">—</span>`;
+
+      const reportLink = isCompleted ? `<a href="report.html?id=${i.id}" class="btn btn-sm btn-outline">View Report</a>` : "";
+      const deleteBtn = `<button class="btn btn-sm btn-danger" onclick="deleteInterviewItem(${i.id})">Delete</button>`;
+
+      return `
+        <tr>
+          <td><strong>${i.job_role}</strong></td>
+          <td>${i.interview_type}</td>
+          <td><span class="badge ${badgeClass}">${statusLabel}</span></td>
+          <td>${new Date(i.created_at).toLocaleDateString()}</td>
+          <td>${scoreDisplay}</td>
+          <td>
+            <div style="display:flex;gap:6px;">
+              ${reportLink}
+              ${deleteBtn}
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join("") : `<tr><td colspan="6" class="muted text-center" style="padding:16px;">No interviews recorded for this candidate yet.</td></tr>`;
+
+  } catch (err) {
+    document.getElementById("interviewsBody").innerHTML = `<tr><td colspan="6" class="muted">Error: ${err.message}</td></tr>`;
+  }
+}
+
+async function deleteInterviewItem(id) {
+  if (confirm(`Delete interview record #${id}?\n\nCandidate account will NOT be deleted.`)) {
+    try {
+      await Api.deleteInterview(id);
+      await loadCandidateDetail();
+    } catch (e) {
+      alert("Error deleting record: " + e.message);
+    }
+  }
+}
+</script>
+</body>
+</html>
