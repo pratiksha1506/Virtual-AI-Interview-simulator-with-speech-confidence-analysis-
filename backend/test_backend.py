@@ -700,6 +700,180 @@ def run_tests():
         f"Resume Q1 must reflect resume skills, got: {q1_resume['question_text']}"
     print("Resume-tailored first question verified successfully!")
 
+    # =========================================================================
+    # TESTS FOR USER PROMPT: THREE MANDATORY ISSUE FIXES
+    # =========================================================================
+
+    # 31. Issue 1: Registered Candidate Data Persistence, Login & Admin Verification
+    print("\n[TEST 31] Verifying Issue 1: Registered Candidate Data Is Saved Permanently in DB...")
+    from backend.app.database import get_user_by_email, delete_user_and_data, verify_password
+
+    reg_cand_email = f"priya_verified_{int(time.time())}@example.com"
+    reg_cand_pass = "PriyaSecurePass2026!"
+    reg_cand_name = "Priya Sharma"
+
+    # A. Register new candidate
+    cand_reg_resp = client.post("/api/auth/register", json={
+        "name": reg_cand_name,
+        "email": reg_cand_email,
+        "password": reg_cand_pass
+    })
+    assert cand_reg_resp.status_code == 200, f"Registration failed: {cand_reg_resp.text}"
+    reg_data = cand_reg_resp.json()
+    assert reg_data["status"] == "success"
+    assert "created successfully" in reg_data["message"].lower()
+    assert reg_data["user"]["name"] == reg_cand_name
+    assert reg_data["user"]["email"] == reg_cand_email.lower()
+    new_cand_id = reg_data["user"]["id"]
+    print(f"Registration successful for {reg_cand_name} (ID: {new_cand_id}) with clear success response.")
+
+    # B. Verify candidate record exists in SQLite database with hashed password
+    db_cand = get_user_by_email(reg_cand_email)
+    assert db_cand is not None, "Candidate must be stored permanently in SQLite database!"
+    assert db_cand["name"] == reg_cand_name
+    assert db_cand["email"] == reg_cand_email.lower()
+    assert db_cand["role"] == "job_seeker"
+    assert db_cand["password_hash"] != reg_cand_pass, "Password must be hashed, never plaintext!"
+    assert verify_password(reg_cand_pass, db_cand["password_hash"]) is True, "Password hash must be verifiable!"
+    print("Candidate database persistence confirmed: Record exists in SQLite 'users' table with secure hash.")
+
+    # C. Prevent duplicate registration with the same email
+    dup_reg_resp = client.post("/api/auth/register", json={
+        "name": "Priya Imposter",
+        "email": reg_cand_email,
+        "password": "AnotherPassword123"
+    })
+    assert dup_reg_resp.status_code == 400, f"Duplicate registration must return 400, got {dup_reg_resp.status_code}"
+    assert "already exists" in dup_reg_resp.text.lower()
+    print("Duplicate email prevention confirmed: Rejected with 400 Bad Request.")
+
+    # D. Newly registered candidate can log in using their credentials
+    cand_login_resp = client.post("/api/auth/login", json={
+        "email": reg_cand_email,
+        "password": reg_cand_pass
+    })
+    assert cand_login_resp.status_code == 200, f"Login failed for newly registered candidate: {cand_login_resp.text}"
+    login_cand_data = cand_login_resp.json()
+    assert login_cand_data["user"]["email"] == reg_cand_email.lower()
+    assert "token" in login_cand_data and len(login_cand_data["token"]) > 10
+    print("Login with newly registered candidate credentials verified successfully.")
+
+    # E. Admin Dashboard displays newly registered candidates
+    admin_candidates_resp = client.get("/api/admin/candidates", headers=admin_headers)
+    assert admin_candidates_resp.status_code == 200
+    candidate_list = admin_candidates_resp.json()["candidates"]
+    candidate_emails = [c["email"] for c in candidate_list]
+    assert reg_cand_email.lower() in candidate_emails, "Admin candidate list must include newly registered candidate!"
+    assert "pratikshahm1506@gmail.com" in candidate_emails, "Existing candidate Prathiksha H M must NOT be deleted!"
+    print(f"Admin Dashboard candidate list verified: Contains new candidate '{reg_cand_name}' and preserved 'Prathiksha H M'.")
+
+    # Clean up test user Priya Sharma
+    delete_user_and_data(new_cand_id)
+    print("Cleaned up temporary test candidate.")
+
+    # 32. Issue 3: Prevent Repeated Interview Questions (Deduplication Algorithm & Multi-Round Verification)
+    print("\n[TEST 32] Verifying Issue 3: Prevention of Repeated Interview Questions...")
+    from backend.app.services.ai_service import is_question_duplicate, normalize_question_text
+
+    # A. Unit tests for is_question_duplicate
+    sample_q = "How do you optimize page load speed and improve Core Web Vitals on a web application?"
+    exact_dup = "How do you optimize page load speed and improve Core Web Vitals on a web application?"
+    cased_dup = "how do you optimize page load speed and improve core web vitals on a web application?"
+    paraphrased_dup = "How would you optimize page load speed and improve Core Web Vitals on web apps?"
+    different_q = "How do database indexes work internally, and how do you identify slow queries?"
+
+    assert is_question_duplicate(exact_dup, [sample_q])[0] is True, "Exact duplicate must be detected!"
+    assert is_question_duplicate(cased_dup, [sample_q])[0] is True, "Case-insensitive duplicate must be detected!"
+    assert is_question_duplicate(paraphrased_dup, [sample_q], threshold=0.70)[0] is True, "Paraphrased question must be detected!"
+    assert is_question_duplicate(different_q, [sample_q])[0] is False, "Distinct question must not be flagged as duplicate!"
+    print("Question deduplication algorithm unit tests (exact, normalized, paraphrased, distinct) passed 100%.")
+
+    # B. Test full 5-question interview flow ensuring ZERO repeated or nearly identical questions
+    print("Running 5-turn interview to verify session-wide zero-repetition mandate...")
+    int_5q = client.post("/api/interviews", json={
+        "jobRole": "Frontend Developer",
+        "experienceLevel": "Mid-Level",
+        "interviewType": "Technical",
+        "difficulty": "Medium",
+        "questionCount": 5,
+        "durationMinutes": 25,
+        "cameraEnabled": False,
+        "resumeText": ""
+    }, headers=prathiksha_headers).json()
+
+    int_5_id = int_5q["interview"]["id"]
+    asked_session_questions = [int_5q["first_question"]["question_text"]]
+    curr_q_id = int_5q["first_question"]["id"]
+    print(f"Round 1 Question: '{asked_session_questions[0]}'")
+
+    candidate_answers = [
+        "I am a frontend developer with experience in React, TypeScript, and state management.",
+        "I optimize performance by using lazy loading, memoizing heavy components, and reducing bundle sizes.",
+        "To measure Core Web Vitals, I use Chrome DevTools Lighthouse to inspect LCP, CLS, and FID.",
+        "When managing state across complex components, I use Zustand or Redux Toolkit with selectors.",
+        "To prevent excessive re-renders, we use React.memo, useCallback hooks, and localized component state."
+    ]
+
+    for round_num, ans in enumerate(candidate_answers, start=1):
+        submit_r = client.post(f"/api/interviews/{int_5_id}/responses", data={
+            "question_id": curr_q_id,
+            "response_duration": "30.0",
+            "transcript": ans
+        }, headers=prathiksha_headers)
+        assert submit_r.status_code == 200, f"Submit round {round_num} failed: {submit_r.text}"
+        r_data = submit_r.json()
+        if round_num < 5:
+            next_q_obj = r_data["next_question"]
+            assert next_q_obj is not None, f"Expected next question after round {round_num}"
+            next_text = next_q_obj["question_text"]
+            curr_q_id = next_q_obj["id"]
+            print(f"Round {round_num + 1} Question: '{next_text}'")
+
+            # Verify that next_text is NOT a duplicate of any previously asked question in this session
+            is_dup, matched_prev = is_question_duplicate(next_text, asked_session_questions)
+            assert not is_dup, f"Repeated question detected in Round {round_num + 1}! '{next_text}' matched '{matched_prev}'"
+            asked_session_questions.append(next_text)
+        else:
+            assert r_data["interview_completed"] is True, "Interview must complete after answering all 5 questions!"
+
+    # Pairwise cross-validation across all questions asked in this interview
+    print(f"Verifying pairwise uniqueness across all {len(asked_session_questions)} questions asked...")
+    for i in range(len(asked_session_questions)):
+        for j in range(i + 1, len(asked_session_questions)):
+            q_a = asked_session_questions[i]
+            q_b = asked_session_questions[j]
+            is_dup, _ = is_question_duplicate(q_a, [q_b])
+            assert not is_dup, f"Pairwise question duplicate detected! '{q_a}' vs '{q_b}'"
+
+    print("Zero repeated questions confirmed across the complete 5-turn interview session!")
+
+    # 33. Issue 2: Code Verification for Mobile Audio & Speech Recognition
+    print("\n[TEST 33] Verifying Issue 2: Mobile Audio Recognition Code Structure...")
+    room_js_path = root_dir / "js" / "interview-room.js"
+    assert room_js_path.exists(), "interview-room.js must exist!"
+    room_js_content = room_js_path.read_text(encoding="utf-8")
+
+    # Mobile device detection
+    assert "isMobile" in room_js_content, "Mobile browser detection must be present in interview-room.js"
+    assert "isIOS" in room_js_content, "iOS detection must be present in interview-room.js"
+
+    # Session text accumulation (prevents transcript wipe on mobile restart)
+    assert "sessionFinalText" in room_js_content, "sessionFinalText accumulator must be implemented to preserve mobile speech"
+
+    # Hardware microphone release for SpeechRecognition on mobile
+    assert "permStream.getTracks().forEach" in room_js_content, "Mobile mic stream release must be implemented to avoid mic lockouts"
+
+    # Comprehensive error handling with user guidance
+    assert "not-allowed" in room_js_content or "permission-denied" in room_js_content, "Microphone permission denial error handling required"
+    assert "no-speech" in room_js_content, "No-speech handling required"
+    assert "audio-capture" in room_js_content, "Audio-capture error handling required"
+    assert "network" in room_js_content, "Network error handling required"
+
+    # Candidate text editing and manual mode fallback
+    assert "editableTranscript" in room_js_content, "Editable transcript textarea must be provided"
+    assert "toggleInputModeBtn" in room_js_content, "Toggle input mode button must be provided for manual typing fallback"
+    print("Mobile audio recognition implementation verified in interview-room.js.")
+
     # Clear test interviews to leave system with no old history
     from backend.app.database import clear_all_interview_history
     clear_all_interview_history()

@@ -3,7 +3,6 @@ from pathlib import Path
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-DB_PATH = BASE_DIR / "interview_simulator.db"
 
 # Load .env file manually if exists (avoids extra dependency)
 env_path = BASE_DIR / ".env"
@@ -17,13 +16,26 @@ if env_path.exists():
                 val_clean = val.strip()
                 os.environ[key_clean] = val_clean
 
+# Permanent SQLite Database Path (can be overridden by DB_PATH / DATABASE_PATH)
+db_env = os.environ.get("DB_PATH") or os.environ.get("DATABASE_PATH")
+if db_env:
+    DB_PATH = Path(db_env).resolve()
+else:
+    DB_PATH = BASE_DIR / "interview_simulator.db"
+
 PORT = int(os.environ.get("PORT", 8000))
 HOST = os.environ.get("HOST", "127.0.0.1")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 SESSION_SECRET = os.environ.get("SESSION_SECRET", "ai_interview_sim_secret_key_v1")
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+def _clean_api_key(val: str) -> str:
+    cleaned = (val or "").strip()
+    if cleaned.lower() in ["", "key", "your_key", "your_key_here", "your_api_key_here", "none", "null"] or len(cleaned) < 10:
+        return ""
+    return cleaned
+
+GEMINI_API_KEY = _clean_api_key(os.environ.get("GEMINI_API_KEY", ""))
+OPENAI_API_KEY = _clean_api_key(os.environ.get("OPENAI_API_KEY", ""))
 
 raw_model = os.environ.get("LLM_MODEL", "gemini-flash-lite-latest").strip()
 # Gracefully map deprecated models to active working flash-lite

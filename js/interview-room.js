@@ -302,37 +302,108 @@
     }
   });
 
-  // Speech Recognition Setup
+  // Mobile & Audio Capabilities Detection
+  const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+  let sessionFinalText = "";
+  let initialTextBeforeStart = "";
+  let recordedMimeType = "audio/webm";
+
+  // Speech Recognition Setup (Optimized for Mobile Android & iOS Safari + Desktop)
   function initSpeechRecognition() {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SR) {
+    if (!SR) {
+      recordingError.textContent = "Voice speech recognition is not supported on this browser. You can type your answer directly in the box below.";
+      recordingError.style.display = "block";
+      enableManualMode();
+      return;
+    }
+
+    try {
+      if (recognition) {
+        try { recognition.abort(); } catch (e) {}
+      }
       recognition = new SR();
-      recognition.continuous = true;
+      // On iOS Safari, continuous=true can trigger immediate abort or silence
+      recognition.continuous = !isIOS;
       recognition.interimResults = true;
-      recognition.lang = "en-US";
+      recognition.lang = navigator.language || "en-US";
+      recognition.maxAlternatives = 1;
+
+      recognition.onstart = function () {
+        recordingStatus.textContent = isMobile
+          ? "🔴 Listening… Speak clearly into your phone's microphone."
+          : "🔴 Listening… Speak your answer into your microphone.";
+        recordingIndicator.style.display = "inline-block";
+        recordingError.style.display = "none";
+      };
 
       recognition.onresult = function (event) {
-        let fullTranscript = "";
-        for (let i = 0; i < event.results.length; ++i) {
-          fullTranscript += event.results[i][0].transcript + " ";
+        let interimText = "";
+        let newlyFinalText = "";
+
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          const item = event.results[i];
+          if (item.isFinal) {
+            newlyFinalText += item[0].transcript + " ";
+          } else {
+            interimText += item[0].transcript;
+          }
         }
-        // Stream text into editable textarea
-        editableTranscript.value = fullTranscript.trim();
+
+        if (newlyFinalText) {
+          sessionFinalText += newlyFinalText;
+        }
+
+        // Merge initial text (if candidate typed before speaking) with live recognition
+        const prefix = initialTextBeforeStart ? (initialTextBeforeStart.trim() + " ") : "";
+        const currentStream = (sessionFinalText + interimText).trim();
+        editableTranscript.value = (prefix + currentStream).trim();
         updateWordCount();
       };
 
       recognition.onerror = function (e) {
-        console.warn("Speech recognition warning:", e);
+        console.warn("Speech recognition notice:", e.error, e);
+        let msg = "";
+        if (e.error === "not-allowed" || e.error === "permission-denied") {
+          msg = "Microphone access was denied. Please allow microphone access in your browser/device settings, or use manual text typing below.";
+          stopRecording();
+          enableManualMode();
+        } else if (e.error === "no-speech") {
+          recordingStatus.textContent = "Listening… Please speak clearly into your microphone.";
+          return;
+        } else if (e.error === "audio-capture") {
+          msg = "Microphone is busy or unavailable. Please close other recording apps or use manual typing below.";
+          stopRecording();
+          enableManualMode();
+        } else if (e.error === "network") {
+          msg = "Speech recognition network timeout. You can retry speaking or type your answer directly in the box below.";
+        } else if (e.error === "aborted") {
+          return;
+        } else {
+          msg = `Speech recognition note: ${e.error || "interrupted"}. You can type directly into the answer box below.`;
+        }
+
+        if (msg) {
+          recordingError.textContent = msg;
+          recordingError.style.display = "block";
+        }
       };
 
       recognition.onend = function () {
         if (isRecording) {
-          // Restart if still marked recording (handles browser timeout)
-          try { recognition.start(); } catch (e) {}
+          // Restart recognition seamlessly if user is still in recording mode (handles browser timeouts)
+          try {
+            recognition.start();
+          } catch (err) {
+            console.warn("Speech recognition restart notice:", err);
+          }
         }
       };
-    } else {
-      recordingError.textContent = "Web Speech Recognition is not supported on this browser. You can type your answer directly.";
+    } catch (err) {
+      console.error("SpeechRecognition initialization failed:", err);
+      recordingError.textContent = "Unable to initialize speech recognition. Manual text typing mode enabled.";
       recordingError.style.display = "block";
       enableManualMode();
     }
@@ -371,11 +442,13 @@
     }
   });
 
-  // Start Answer Recording
+  // Start Answer Recording (Cross-Platform Mobile + Desktop)
   startBtn.addEventListener("click", async () => {
     window.speechSynthesis.cancel();
     audioChunks = [];
     recordingError.style.display = "none";
+    initialTextBeforeStart = editableTranscript.value.trim();
+    sessionFinalText = "";
     answerStartTime = Date.now();
 
     answerTimerBadge.textContent = "⏱ 00:00";
@@ -390,25 +463,63 @@
       answerTimerBadge.textContent = formatTime(elapsed);
     }, 500);
 
-    // Audio stream capture
+    // Request & verify microphone permission cleanly
     try {
-      if (!mediaStream) {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        if (!isMobile) {
+          // On desktop: capture audio stream for optional audio file upload
+          if (!mediaStream) {
+            mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          }
+          if (typeof MediaRecorder !== "undefined") {
+            let recOptions = {};
+            if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+              recOptions = { mimeType: "audio/webm;codecs=opus" };
+              recordedMimeType = "audio/webm";
+            } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+              recOptions = { mimeType: "audio/webm" };
+              recordedMimeType = "audio/webm";
+            } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+              recOptions = { mimeType: "audio/mp4" };
+              recordedMimeType = "audio/mp4";
+            }
+            try {
+              mediaRecorder = new MediaRecorder(mediaStream, recOptions);
+              mediaRecorder.ondataavailable = (e) => {
+                if (e.data && e.data.size > 0) audioChunks.push(e.data);
+              };
+              mediaRecorder.start(250);
+            } catch (mrErr) {
+              console.warn("MediaRecorder start warning:", mrErr);
+            }
+          }
+        } else {
+          // On mobile: prompt microphone permission and release track so SpeechRecognition has uninhibited hardware mic access
+          const permStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          permStream.getTracks().forEach(t => t.stop());
+        }
       }
-      mediaRecorder = new MediaRecorder(mediaStream);
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) audioChunks.push(e.data);
-      };
-      mediaRecorder.start(250);
     } catch (err) {
-      console.warn("Microphone capture warning:", err);
+      console.warn("Microphone access prompt:", err);
+      if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+        recordingError.textContent = "Microphone access was denied. Please allow microphone permissions in your mobile browser settings, or use manual typing below.";
+        recordingError.style.display = "block";
+        stopRecording();
+        enableManualMode();
+        return;
+      }
     }
 
-    // Start recognition
+    // Start Speech Recognition
+    if (!recognition) {
+      initSpeechRecognition();
+    }
     if (recognition) {
       try {
         recognition.start();
-      } catch (e) {}
+      } catch (e) {
+        console.warn("Speech recognition start warning:", e);
+      }
     }
 
     startBtn.style.display = "none";
@@ -435,7 +546,8 @@
     submitBtn.style.display = "inline-flex";
     submitBtn.disabled = false;
     submitBtn.textContent = "🚀 Submit Answer";
-    recordingStatus.textContent = "Answer recorded. You may edit your transcript below before submitting.";
+    recordingStatus.textContent = "✓ Voice answer recorded. You may edit your transcript in the box above before submitting.";
+    updateWordCount();
   }
 
   stopBtn.addEventListener("click", stopRecording);
@@ -443,6 +555,8 @@
   retryBtn.addEventListener("click", () => {
     clearInterval(answerTimerInterval);
     audioChunks = [];
+    sessionFinalText = "";
+    initialTextBeforeStart = "";
     editableTranscript.value = "";
     updateWordCount();
     answerTimerBadge.style.display = "none";
@@ -456,6 +570,7 @@
     submitBtn.textContent = "🚀 Submit Answer";
     isSubmitting = false;
     setState("READY_TO_ANSWER");
+    recordingStatus.textContent = "Click 'Start Voice Answer' to record or type in the box below.";
   });
 
   // Submit Answer
@@ -485,8 +600,10 @@
 
     // Audio file if recorded
     if (audioChunks.length > 0) {
-      const blob = new Blob(audioChunks, { type: "audio/webm" });
-      formData.append("audio_file", blob, "answer.webm");
+      const mime = recordedMimeType || "audio/webm";
+      const ext = mime.includes("mp4") ? "mp4" : "webm";
+      const blob = new Blob(audioChunks, { type: mime });
+      formData.append("audio_file", blob, `answer.${ext}`);
     }
 
     // Presentation telemetry from local assist
@@ -608,6 +725,8 @@
     resultPanel.style.display = "none";
     recordingError.style.display = "none";
     editableTranscript.value = "";
+    sessionFinalText = "";
+    initialTextBeforeStart = "";
     audioChunks = [];
     isSubmitting = false;
     submitBtn.disabled = false;

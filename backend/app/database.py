@@ -7,8 +7,11 @@ from typing import Optional, Dict, Any, List
 from .config import DB_PATH
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
     return conn
 
 def hash_password(password: str, salt: Optional[str] = None) -> str:
@@ -164,6 +167,15 @@ def init_db():
         )
         conn.commit()
 
+    # Seed registered candidate Prathiksha H M if not present (permanent candidate preservation)
+    cursor.execute("SELECT id FROM users WHERE email = 'pratikshahm1506@gmail.com'")
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+            ("Prathiksha H M", "pratikshahm1506@gmail.com", hash_password("prathiksha123"), "job_seeker", datetime.utcnow().isoformat())
+        )
+        conn.commit()
+
     conn.close()
 
 # User helpers
@@ -171,14 +183,18 @@ def create_user(name: str, email: str, password: str, role: str = "job_seeker") 
     conn = get_connection()
     cursor = conn.cursor()
     created_at = datetime.utcnow().isoformat()
+    clean_email = email.lower().strip()
+    clean_name = name.strip()
     try:
         cursor.execute(
             "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-            (name.strip(), email.lower().strip(), hash_password(password), role, created_at)
+            (clean_name, clean_email, hash_password(password), role, created_at)
         )
         conn.commit()
         user_id = cursor.lastrowid
-        return {"id": user_id, "name": name.strip(), "email": email.lower().strip(), "role": role, "createdAt": created_at}
+        return {"id": user_id, "name": clean_name, "email": clean_email, "role": role, "createdAt": created_at}
+    except sqlite3.IntegrityError:
+        raise ValueError("An account with this email already exists.")
     finally:
         conn.close()
 

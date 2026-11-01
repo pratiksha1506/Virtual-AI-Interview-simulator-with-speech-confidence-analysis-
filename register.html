@@ -15,7 +15,8 @@
       Practice real-time technical interviews with adaptive AI and voice feedback.
     </p>
 
-    <div id="errorBox" class="alert alert-error" style="display:none;"></div>
+    <div id="errorBox" class="alert alert-error" style="display:none;margin-bottom:16px;"></div>
+    <div id="successBox" class="alert alert-success" style="display:none;margin-bottom:16px;"></div>
 
     <form id="registerForm">
       <div class="form-group">
@@ -55,22 +56,33 @@ document.getElementById("registerForm").addEventListener("submit", async functio
   const password = document.getElementById("password").value;
   const confirmPassword = document.getElementById("confirmPassword").value;
   const errorBox = document.getElementById("errorBox");
+  const successBox = document.getElementById("successBox");
   const submitBtn = document.getElementById("submitBtn");
 
   if (password !== confirmPassword) {
     errorBox.textContent = "Passwords do not match.";
     errorBox.style.display = "block";
+    successBox.style.display = "none";
     return;
   }
 
   errorBox.style.display = "none";
+  successBox.style.display = "none";
   submitBtn.disabled = true;
   submitBtn.textContent = "Creating your account…";
 
   try {
-    await Api.register(name, email, password);
-    window.location.href = "candidate-dashboard.html";
+    const res = await Api.register(name, email, password);
+    const candidateName = (res.user && res.user.name) ? res.user.name : name;
+    errorBox.style.display = "none";
+    successBox.textContent = `✓ Account created successfully! Welcome, ${candidateName}. Redirecting to dashboard…`;
+    successBox.style.display = "block";
+    submitBtn.textContent = "✓ Account Created";
+    setTimeout(() => {
+      window.location.href = "candidate-dashboard.html";
+    }, 1200);
   } catch (err) {
+    successBox.style.display = "none";
     errorBox.textContent = err.message || "Registration failed. Please check inputs.";
     errorBox.style.display = "block";
     submitBtn.disabled = false;

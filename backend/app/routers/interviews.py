@@ -12,7 +12,7 @@ from ..database import (
     get_configured_question_count
 )
 from .auth import get_current_user_from_request
-from ..services.ai_service import generate_question
+from ..services.ai_service import generate_question, is_question_duplicate, local_heuristic_question
 from ..services.evaluation_service import evaluate_single_response, generate_final_report
 from ..services.resume_service import extract_text_from_file
 
@@ -166,6 +166,20 @@ async def start_scheduled_interview(interview_id: int, request: Request):
                 resume_text=interview.get("resume_text"),
                 previous_qa=prev_qa
             )
+            # Defensive verification: check if generated question is duplicate of any existing question
+            asked_texts = [q["question_text"] for q in questions if q.get("question_text")]
+            is_dup, _ = is_question_duplicate(q_data["question_text"], asked_texts)
+            if is_dup:
+                q_data = local_heuristic_question(
+                    job_role=interview["job_role"],
+                    experience_level=interview["experience_level"],
+                    interview_type=interview["interview_type"],
+                    difficulty=interview["difficulty"],
+                    sequence_num=next_seq,
+                    resume_text=interview.get("resume_text"),
+                    previous_qa=prev_qa
+                )
+
             current_q = add_question(
                 interview_id=interview["id"],
                 sequence_num=next_seq,
@@ -242,6 +256,20 @@ async def get_interview_details(interview_id: int, request: Request):
             resume_text=interview.get("resume_text"),
             previous_qa=prev_qa
         )
+        # Defensive verification: check if generated question is duplicate of any existing question
+        asked_texts = [q["question_text"] for q in questions if q.get("question_text")]
+        is_dup, _ = is_question_duplicate(q_data["question_text"], asked_texts)
+        if is_dup:
+            q_data = local_heuristic_question(
+                job_role=interview["job_role"],
+                experience_level=interview["experience_level"],
+                interview_type=interview["interview_type"],
+                difficulty=interview["difficulty"],
+                sequence_num=next_seq,
+                resume_text=interview.get("resume_text"),
+                previous_qa=prev_qa
+            )
+
         current_q = add_question(
             interview_id=interview["id"],
             sequence_num=next_seq,
@@ -363,41 +391,62 @@ async def submit_answer(
     if is_completed:
         update_interview_status(interview_id, status="completed", completed_at=datetime.utcnow().isoformat())
     else:
-        # Generate next question with rich context and candidate answer analysis
-        prev_qa = [
-            {
-                "question": r.get("question_text", ""),
-                "transcript": r.get("transcript", ""),
-                "topic": r.get("topic", ""),
-                "overall_score": r.get("overall_score"),
-                "technical_score": r.get("technical_score"),
-                "content_score": r.get("content_score"),
-                "feedback": r.get("feedback")
-            }
-            for r in all_responses
-        ]
+        existing_questions = get_questions_for_interview(interview_id)
         next_seq = answered_count + 1
-        q_data = await generate_question(
-            interview_id=interview_id,
-            job_role=interview["job_role"],
-            experience_level=interview["experience_level"],
-            interview_type=interview["interview_type"],
-            difficulty=interview["difficulty"],
-            sequence_num=next_seq,
-            total_questions=total_required,
-            resume_text=interview.get("resume_text"),
-            previous_qa=prev_qa
-        )
-        next_q = add_question(
-            interview_id=interview_id,
-            sequence_num=next_seq,
-            question_text=q_data["question_text"],
-            question_type=q_data.get("question_type", interview["interview_type"]),
-            topic=q_data.get("topic", "Adaptive Follow-Up"),
-            difficulty=q_data.get("difficulty", interview["difficulty"]),
-            expected_keywords=q_data.get("expected_keywords", ""),
-            context_notes=q_data.get("context_notes", "")
-        )
+        existing_next_q = next((q for q in existing_questions if q["sequence_num"] == next_seq), None)
+
+        if existing_next_q:
+            next_q = existing_next_q
+        else:
+            # Generate next question with rich context and candidate answer analysis
+            prev_qa = [
+                {
+                    "question": r.get("question_text", ""),
+                    "transcript": r.get("transcript", ""),
+                    "topic": r.get("topic", ""),
+                    "overall_score": r.get("overall_score"),
+                    "technical_score": r.get("technical_score"),
+                    "content_score": r.get("content_score"),
+                    "feedback": r.get("feedback")
+                }
+                for r in all_responses
+            ]
+            q_data = await generate_question(
+                interview_id=interview_id,
+                job_role=interview["job_role"],
+                experience_level=interview["experience_level"],
+                interview_type=interview["interview_type"],
+                difficulty=interview["difficulty"],
+                sequence_num=next_seq,
+                total_questions=total_required,
+                resume_text=interview.get("resume_text"),
+                previous_qa=prev_qa
+            )
+
+            # Defensive verification: check if generated question is duplicate of any existing question
+            asked_texts = [q["question_text"] for q in existing_questions if q.get("question_text")]
+            is_dup, _ = is_question_duplicate(q_data["question_text"], asked_texts)
+            if is_dup:
+                q_data = local_heuristic_question(
+                    job_role=interview["job_role"],
+                    experience_level=interview["experience_level"],
+                    interview_type=interview["interview_type"],
+                    difficulty=interview["difficulty"],
+                    sequence_num=next_seq,
+                    resume_text=interview.get("resume_text"),
+                    previous_qa=prev_qa
+                )
+
+            next_q = add_question(
+                interview_id=interview_id,
+                sequence_num=next_seq,
+                question_text=q_data["question_text"],
+                question_type=q_data.get("question_type", interview["interview_type"]),
+                topic=q_data.get("topic", "Adaptive Follow-Up"),
+                difficulty=q_data.get("difficulty", interview["difficulty"]),
+                expected_keywords=q_data.get("expected_keywords", ""),
+                context_notes=q_data.get("context_notes", "")
+            )
 
     return {
         "analysis": analysis,

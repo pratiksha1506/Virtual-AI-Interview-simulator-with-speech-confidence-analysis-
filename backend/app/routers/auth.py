@@ -41,13 +41,25 @@ def get_current_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
 
 @router.post("/register")
 async def register(req: RegisterRequest, response: Response):
-    existing = get_user_by_email(req.email)
+    clean_email = req.email.lower().strip()
+    existing = get_user_by_email(clean_email)
     if existing:
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
-    user = create_user(req.name, req.email, req.password, role="job_seeker")
+    try:
+        user = create_user(req.name, clean_email, req.password, role="job_seeker")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to save candidate details. Please try again.")
+
     token = sign_session_id(user["id"])
     response.set_cookie(key="session_id", value=token, httponly=True, samesite="lax", max_age=86400 * 7)
-    return {"user": user, "token": token}
+    return {
+        "status": "success",
+        "message": "Candidate account created successfully.",
+        "user": user,
+        "token": token
+    }
 
 @router.post("/login")
 async def login(req: LoginRequest, response: Response):

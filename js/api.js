@@ -1,13 +1,37 @@
+
 /**
  * api.js — Unified API Client for AI Mock Interview Simulator
  * Connects frontend to the secure FastAPI backend with automatic session management.
  */
 const Api = (function () {
-  const BASE_URL = ""; // Same-origin when served via FastAPI on port 8000
+  // Automatically detect the backend URL for local development.
+  let BASE_URL = "";
+
+  if (typeof window !== "undefined" && window.location) {
+    const proto = window.location.protocol;
+    const port = window.location.port;
+    const hostname = window.location.hostname || "127.0.0.1";
+
+    if (proto === "file:") {
+      BASE_URL = "http://127.0.0.1:8080";
+    } else if (
+      port &&
+      ["5500", "3000", "5000", "5173"].includes(port)
+    ) {
+      // Frontend running through Live Server or another development server.
+      BASE_URL = `${proto}//${hostname}:8080`;
+    } else if (port === "8000" || port === "8080") {
+      // Frontend served from the backend itself.
+      BASE_URL = "";
+    }
+    // Otherwise BASE_URL remains empty, allowing same-origin requests.
+  }
+
   const TOKEN_KEY = "ai_interview_token_v2";
 
   function getToken() {
-    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(TOKEN_KEY) ||
+           sessionStorage.getItem(TOKEN_KEY);
   }
 
   function setToken(token) {
@@ -27,26 +51,39 @@ const Api = (function () {
     options.headers = options.headers || {};
 
     const token = getToken();
+
     if (token) {
       options.headers["Authorization"] = `Bearer ${token}`;
     }
 
-    if (options.body && !(options.body instanceof FormData)) {
+    if (
+      options.body &&
+      !(options.body instanceof FormData)
+    ) {
       options.headers["Content-Type"] = "application/json";
+
       if (typeof options.body !== "string") {
         options.body = JSON.stringify(options.body);
       }
     }
 
     let res;
+
     try {
       res = await fetch(BASE_URL + endpoint, options);
     } catch (netErr) {
-      throw new Error("Unable to reach backend server. Please make sure the FastAPI server is running.");
+      console.error("Backend connection error:", netErr);
+
+      throw new Error(
+        `Unable to reach backend server at ${
+          BASE_URL || window.location.origin
+        }. Please make sure the FastAPI server is running.`
+      );
     }
 
     const contentType = res.headers.get("content-type") || "";
     let data;
+
     if (contentType.includes("application/json")) {
       data = await res.json();
     } else {
@@ -54,11 +91,17 @@ const Api = (function () {
     }
 
     if (!res.ok) {
-      const err = new Error(data.detail || data.error || "An unexpected server error occurred.");
+      const err = new Error(
+        data.detail ||
+        data.error ||
+        "An unexpected server error occurred."
+      );
+
       err.status = res.status;
       err.data = data;
       throw err;
     }
+
     return data;
   }
 
@@ -67,119 +110,219 @@ const Api = (function () {
     setToken,
     clearToken,
 
-    // Auth
+    // Authentication
     async register(name, email, password) {
-      const res = await request("/api/auth/register", { method: "POST", body: { name, email, password } });
+      const res = await request("/api/auth/register", {
+        method: "POST",
+        body: { name, email, password }
+      });
+
       if (res.token) setToken(res.token);
       return res;
     },
+
     async login(email, password) {
-      const res = await request("/api/auth/login", { method: "POST", body: { email, password } });
+      const res = await request("/api/auth/login", {
+        method: "POST",
+        body: { email, password }
+      });
+
       if (res.token) setToken(res.token);
       return res;
     },
+
     async adminLogin(email, password) {
-      const res = await request("/api/auth/admin-login", { method: "POST", body: { email, password } });
+      const res = await request("/api/auth/admin-login", {
+        method: "POST",
+        body: { email, password }
+      });
+
       if (res.token) setToken(res.token);
       return res;
     },
+
     async getMe() {
       try {
-        const res = await request("/api/auth/me", { method: "GET" });
+        const res = await request("/api/auth/me", {
+          method: "GET"
+        });
+
         return res.user;
       } catch (e) {
         return null;
       }
     },
+
     async logout() {
       try {
-        await request("/api/auth/logout", { method: "POST" });
-      } catch (e) {}
+        await request("/api/auth/logout", {
+          method: "POST"
+        });
+      } catch (e) {
+        // Clear the local session even if the server is unavailable.
+      }
+
       clearToken();
       window.location.href = "index.html";
     },
+
     async requireAuth(expectedRole = null) {
       const user = await this.getMe();
+
       if (!user) {
-        window.location.href = expectedRole === "admin" ? "login-admin.html" : "login-candidate.html";
+        window.location.href =
+          expectedRole === "admin"
+            ? "login-admin.html"
+            : "login-candidate.html";
+
         return null;
       }
+
       if (expectedRole && user.role !== expectedRole) {
-        window.location.href = user.role === "admin" ? "admin-dashboard.html" : "candidate-dashboard.html";
+        window.location.href =
+          user.role === "admin"
+            ? "admin-dashboard.html"
+            : "candidate-dashboard.html";
+
         return null;
       }
+
       return user;
     },
 
     // Candidate
     async getCandidateDashboard() {
-      return request("/api/candidate/dashboard", { method: "GET" });
+      return request("/api/candidate/dashboard", {
+        method: "GET"
+      });
     },
+
     async getCandidateHistory() {
-      return request("/api/candidate/history", { method: "GET" });
+      return request("/api/candidate/history", {
+        method: "GET"
+      });
     },
 
     // Interviews
     async uploadResume(formData) {
-      return request("/api/interviews/upload-resume", { method: "POST", body: formData });
+      return request("/api/interviews/upload-resume", {
+        method: "POST",
+        body: formData
+      });
     },
+
     async createInterview(payload) {
-      return request("/api/interviews", { method: "POST", body: payload });
+      return request("/api/interviews", {
+        method: "POST",
+        body: payload
+      });
     },
+
     async startInterview(interviewId) {
-      return request(`/api/interviews/${interviewId}/start`, { method: "POST" });
+      return request(`/api/interviews/${interviewId}/start`, {
+        method: "POST"
+      });
     },
+
     async getInterview(interviewId) {
-      return request(`/api/interviews/${interviewId}`, { method: "GET" });
+      return request(`/api/interviews/${interviewId}`, {
+        method: "GET"
+      });
     },
+
     async submitResponse(interviewId, formData) {
-      return request(`/api/interviews/${interviewId}/responses`, { method: "POST", body: formData });
+      return request(`/api/interviews/${interviewId}/responses`, {
+        method: "POST",
+        body: formData
+      });
     },
+
     async finishInterview(interviewId) {
-      return request(`/api/interviews/${interviewId}/finish`, { method: "POST" });
+      return request(`/api/interviews/${interviewId}/finish`, {
+        method: "POST"
+      });
     },
+
     async getReport(interviewId) {
-      return request(`/api/interviews/${interviewId}/report`, { method: "GET" });
+      return request(`/api/interviews/${interviewId}/report`, {
+        method: "GET"
+      });
     },
 
     // Admin
     async getAdminDashboard() {
-      return request("/api/admin/dashboard", { method: "GET" });
+      return request("/api/admin/dashboard", {
+        method: "GET"
+      });
     },
+
     async getAdminCandidates() {
-      return request("/api/admin/candidates", { method: "GET" });
+      return request("/api/admin/candidates", {
+        method: "GET"
+      });
     },
+
     async getAdminCandidate(candidateId) {
-      return request(`/api/admin/candidate/${candidateId}`, { method: "GET" });
+      return request(`/api/admin/candidate/${candidateId}`, {
+        method: "GET"
+      });
     },
+
     async scheduleInterview(payload) {
-      return request("/api/admin/schedule", { method: "POST", body: payload });
+      return request("/api/admin/schedule", {
+        method: "POST",
+        body: payload
+      });
     },
+
     async cancelInterview(interviewId) {
-      return request(`/api/admin/cancel/${interviewId}`, { method: "POST" });
+      return request(`/api/admin/cancel/${interviewId}`, {
+        method: "POST"
+      });
     },
+
     async markNotAttended(interviewId) {
-      return request(`/api/admin/not-attended/${interviewId}`, { method: "POST" });
+      return request(`/api/admin/not-attended/${interviewId}`, {
+        method: "POST"
+      });
     },
+
     async getAdminInterviewDetails(interviewId) {
-      return request(`/api/admin/interviews/${interviewId}/details`, { method: "GET" });
+      return request(`/api/admin/interviews/${interviewId}/details`, {
+        method: "GET"
+      });
     },
+
     async deleteInterview(interviewId) {
-      return request(`/api/admin/interviews/${interviewId}`, { method: "DELETE" });
+      return request(`/api/admin/interviews/${interviewId}`, {
+        method: "DELETE"
+      });
     },
+
     async clearAllInterviewHistory() {
-      return request("/api/admin/interview-history", { method: "DELETE" });
+      return request("/api/admin/interview-history", {
+        method: "DELETE"
+      });
     },
+
     async getAdminSettings() {
-      return request("/api/admin/settings", { method: "GET" });
+      return request("/api/admin/settings", {
+        method: "GET"
+      });
     },
+
     async updateAdminSettings(payload) {
-      return request("/api/admin/settings", { method: "POST", body: payload });
+      return request("/api/admin/settings", {
+        method: "POST",
+        body: payload
+      });
     },
 
     // System Health
     async getHealth() {
-      return request("/api/health", { method: "GET" });
+      return request("/api/health", {
+        method: "GET"
+      });
     }
   };
 })();

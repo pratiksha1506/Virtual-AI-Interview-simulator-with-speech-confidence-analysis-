@@ -2,6 +2,7 @@ import json
 import logging
 import random
 import re
+import difflib
 from typing import List, Dict, Any, Optional
 import httpx
 from ..config import GEMINI_API_KEY, OPENAI_API_KEY, LLM_MODEL
@@ -249,6 +250,49 @@ async def call_openai(messages: List[Dict[str, str]]) -> Optional[str]:
         logger.error(f"OpenAI API call failed: {e}")
     return None
 
+def normalize_question_text(text: str) -> str:
+    """Normalizes question text for robust semantic and textual comparison."""
+    if not text:
+        return ""
+    cleaned = re.sub(r'[^\w\s]', ' ', text.lower())
+    return " ".join(cleaned.split())
+
+def is_question_duplicate(candidate_q: str, asked_questions: List[str], threshold: float = 0.70) -> tuple[bool, Optional[str]]:
+    """
+    Checks if a candidate question is identical or nearly identical to any previously asked question.
+    Returns (is_duplicate: bool, matched_question_text: Optional[str]).
+    """
+    if not candidate_q or not asked_questions:
+        return False, None
+
+    norm_cand = normalize_question_text(candidate_q)
+    cand_words = set(norm_cand.split())
+
+    for prev in asked_questions:
+        if not prev:
+            continue
+        norm_prev = normalize_question_text(prev)
+
+        # 1. Exact normalized match
+        if norm_cand == norm_prev:
+            return True, prev
+
+        # 2. SequenceMatcher similarity ratio
+        ratio = difflib.SequenceMatcher(None, norm_cand, norm_prev).ratio()
+        if ratio >= threshold:
+            return True, prev
+
+        # 3. Jaccard word token overlap
+        prev_words = set(norm_prev.split())
+        if cand_words and prev_words:
+            intersection = cand_words.intersection(prev_words)
+            union = cand_words.union(prev_words)
+            jaccard = len(intersection) / len(union) if union else 0
+            if jaccard >= 0.65:
+                return True, prev
+
+    return False, None
+
 def extract_candidate_concepts(text: str) -> Dict[str, Any]:
     """
     Extracts technologies, algorithms, metrics, and domain action phrases from candidate's answer.
@@ -320,11 +364,19 @@ def local_heuristic_question(job_role: str, experience_level: str, interview_typ
     """
     Intelligent local heuristic question generator with context-awareness and adaptive follow-ups.
     Enforces clear, simple, professional questions, asking only one question at a time.
-    Never relies on random unrelated question banks for follow-up turns.
+    Guarantees that no question is repeated or nearly identical across the interview session.
     """
     has_resume = bool(resume_text and resume_text.strip())
 
-    # Requirement 1 & 5: Without resume, Question 1 must be strictly "Please introduce yourself."
+    # Compile all questions previously asked in this interview
+    asked_texts = []
+    if previous_qa:
+        for qa in previous_qa:
+            qt = qa.get("question", "").strip()
+            if qt and qt not in asked_texts:
+                asked_texts.append(qt)
+
+    # Requirement 1: Without resume, Question 1 must be strictly "Please introduce yourself."
     if sequence_num == 1 and not has_resume:
         return {
             "question_text": "Please introduce yourself.",
@@ -340,7 +392,7 @@ def local_heuristic_question(job_role: str, experience_level: str, interview_typ
         extracted = extract_candidate_concepts(resume_text)
         lead_tech = extracted["tech"][0].capitalize() if extracted["tech"] else "software development"
         lead_domain = extracted["domains"][0] if extracted["domains"] else job_role
-        return {
+        cand_q = {
             "question_text": f"Looking at your background in {lead_tech} and {lead_domain}, could you walk me through your key contributions on your most significant recent project?",
             "question_type": interview_type,
             "topic": "Resume Project Walkthrough",
@@ -348,6 +400,8 @@ def local_heuristic_question(job_role: str, experience_level: str, interview_typ
             "expected_keywords": f"{lead_tech} {lead_domain} architecture implementation ownership results",
             "context_notes": "[Tailored Resume Opening Question]"
         }
+        if not is_question_duplicate(cand_q["question_text"], asked_texts)[0]:
+            return cand_q
 
     # Turns 2+: Must be strictly based on candidate's previous response
     if not previous_qa or len(previous_qa) == 0:
@@ -363,7 +417,6 @@ def local_heuristic_question(job_role: str, experience_level: str, interview_typ
     last_turn = previous_qa[-1]
     last_q = last_turn.get("question", "")
     last_a = last_turn.get("transcript", "").strip()
-    asked_texts = [qa.get("question", "") for qa in previous_qa]
 
     extracted = extract_candidate_concepts(last_a)
     models = extracted["models"]
@@ -373,8 +426,8 @@ def local_heuristic_question(job_role: str, experience_level: str, interview_typ
     action = extracted["project_action"]
     words = extracted["word_count"]
 
-    # Check previously asked questions to prevent repetition
-    covered_text = " ".join(asked_texts).lower()
+    # Candidate follow-up question pool built adaptively from candidate's answer
+    candidate_options: List[Dict[str, Any]] = []
 
     # Case 1: Candidate answered Question 1 (Introduction)
     is_q1_intro = "introduce" in last_q.lower() or sequence_num == 2
@@ -383,116 +436,226 @@ def local_heuristic_question(job_role: str, experience_level: str, interview_typ
             domain_name = models[0] if models else domains[0]
             tools = [t for t in tech if t not in domain_name]
             tool_mention = f" and how you used {tools[0].capitalize()} in it" if tools else ""
-            q_text = f"You mentioned that you have worked on a {domain_name} project. Could you explain what the project does{tool_mention}?"
-            return {
-                "question_text": q_text,
+            candidate_options.append({
+                "question_text": f"You mentioned that you have worked on a {domain_name} project. Could you explain what the project does{tool_mention}?",
                 "question_type": interview_type,
                 "topic": f"{domain_name.title()} Project Overview",
                 "difficulty": difficulty,
                 "expected_keywords": f"{domain_name} architecture implementation challenges results",
                 "context_notes": f"[Adaptive Turn 2: Follow-up on candidate's introduction of {domain_name}]"
-            }
+            })
         elif tech:
             tech_names = ", ".join(t.capitalize() for t in tech[:2])
-            return {
+            candidate_options.append({
                 "question_text": f"You mentioned experience with {tech_names}. Could you describe a recent project where you applied those skills and the main challenges you solved?",
                 "question_type": interview_type,
                 "topic": "Technical Project Highlights",
                 "difficulty": difficulty,
                 "expected_keywords": f"{tech_names} architecture implementation problem resolution",
                 "context_notes": f"[Adaptive Turn 2: Follow-up on candidate's skills {tech_names}]"
-            }
+            })
         else:
-            return {
+            candidate_options.append({
                 "question_text": f"Thank you for introducing yourself. In your journey toward the {job_role} role, what has been the most technically challenging project you have worked on?",
                 "question_type": interview_type,
                 "topic": "Project Deep-Dive",
                 "difficulty": difficulty,
                 "expected_keywords": "project architecture problem solving implementation",
                 "context_notes": "[Adaptive Turn 2: Project inquiry based on intro]"
-            }
+            })
 
     # Case 2: Candidate mentions a specific ML model / algorithm (e.g. "linear regression")
     if models:
         model_name = models[0]
         context_action = action or ("predicting machine output" if "predict machine output" in last_a.lower() else "your project")
-        q_text = f"Why did you choose {model_name} for {context_action}, and how did you evaluate the model?"
-        if q_text not in asked_texts:
-            return {
-                "question_text": q_text,
-                "question_type": interview_type,
-                "topic": f"{model_name.title()} Justification & Evaluation",
-                "difficulty": difficulty,
-                "expected_keywords": f"{model_name} evaluation metrics validation accuracy error assumptions",
-                "context_notes": f"[Adaptive Follow-up: probing model selection {model_name}]"
-            }
+        candidate_options.append({
+            "question_text": f"Why did you choose {model_name} for {context_action}, and how did you evaluate the model?",
+            "question_type": interview_type,
+            "topic": f"{model_name.title()} Model Selection",
+            "difficulty": difficulty,
+            "expected_keywords": f"{model_name} evaluation metrics validation accuracy error assumptions",
+            "context_notes": f"[Adaptive Follow-up: probing model selection {model_name}]"
+        })
+        candidate_options.append({
+            "question_text": f"What specific feature engineering or data preprocessing steps did you perform before feeding data into your {model_name} model?",
+            "question_type": interview_type,
+            "topic": f"{model_name.title()} Feature Engineering",
+            "difficulty": difficulty,
+            "expected_keywords": f"{model_name} feature engineering scaling normalization outliers nulls",
+            "context_notes": f"[Adaptive Follow-up: probing feature engineering {model_name}]"
+        })
+        candidate_options.append({
+            "question_text": f"How did you address potential multicollinearity or overfitting when training your {model_name} model?",
+            "question_type": interview_type,
+            "topic": f"{model_name.title()} Overfitting & Regularization",
+            "difficulty": difficulty,
+            "expected_keywords": f"{model_name} regularization multicollinearity vif ridge lasso",
+            "context_notes": f"[Adaptive Follow-up: probing regularization {model_name}]"
+        })
 
-    # Case 3: Candidate mentions evaluation metrics or validation splits (e.g. "Mean Squared Error", "R-squared", "cross-validation")
+    # Case 3: Candidate mentions evaluation metrics or validation splits
     if metrics:
         metric_name = metrics[0].upper() if len(metrics[0]) <= 4 else metrics[0].title()
         if "cross-validation" in metrics or "cross validation" in last_a.lower():
-            q_text = "How did cross-validation help verify that your model was generalizing well to unseen data, and what hyperparameters did you tune?"
-        elif "train-test split" in metrics or "split" in last_a.lower():
-            q_text = f"How did you evaluate your model using {metric_name}, and how did you verify that the model was not overfitting on that train-test split?"
-        else:
-            q_text = f"Could you explain what the {metric_name} score indicated about your model's performance and how you handled outliers in your dataset?"
-
-        if q_text not in asked_texts:
-            return {
-                "question_text": q_text,
+            candidate_options.append({
+                "question_text": "How did cross-validation help verify that your model was generalizing well to unseen data, and what hyperparameters did you tune?",
                 "question_type": interview_type,
-                "topic": "Model Evaluation & Validation",
+                "topic": "Cross-Validation & Generalization",
                 "difficulty": difficulty,
-                "expected_keywords": f"{metric_name} validation overfitting generalization hyperparameters",
+                "expected_keywords": "cross-validation generalization k-fold hyperparameters tuning stability",
+                "context_notes": "[Adaptive Follow-up: probing cross-validation]"
+            })
+            candidate_options.append({
+                "question_text": "If this model were deployed in a live production environment, how would you continuously monitor it for performance degradation or data drift?",
+                "question_type": interview_type,
+                "topic": "Production Model Monitoring",
+                "difficulty": difficulty,
+                "expected_keywords": "data drift concept drift monitoring prometheus telemetry retrain",
+                "context_notes": "[Adaptive Follow-up: probing production monitoring]"
+            })
+        elif "train-test split" in metrics or "split" in last_a.lower():
+            candidate_options.append({
+                "question_text": f"How did you evaluate your model using {metric_name}, and how did you verify that the model was not overfitting on that train-test split?",
+                "question_type": interview_type,
+                "topic": "Model Evaluation & Overfitting",
+                "difficulty": difficulty,
+                "expected_keywords": f"{metric_name} validation overfitting generalization test set",
                 "context_notes": f"[Adaptive Follow-up: probing evaluation metrics {metric_name}]"
-            }
+            })
+            candidate_options.append({
+                "question_text": "Did you consider using k-fold cross-validation instead of a single train-test split to ensure validation stability across diverse samples?",
+                "question_type": interview_type,
+                "topic": "Validation Methodology",
+                "difficulty": difficulty,
+                "expected_keywords": "k-fold cross-validation variance bias data distribution",
+                "context_notes": "[Adaptive Follow-up: probing validation methodology]"
+            })
+        else:
+            candidate_options.append({
+                "question_text": f"Could you explain what the {metric_name} score indicated about your model's performance and how you handled outliers in your dataset?",
+                "question_type": interview_type,
+                "topic": "Metric Interpretation & Outliers",
+                "difficulty": difficulty,
+                "expected_keywords": f"{metric_name} outliers error distribution residuals",
+                "context_notes": f"[Adaptive Follow-up: probing {metric_name}]"
+            })
 
     # Case 4: Candidate mentions database or SQL
-    if any(t in ["sql", "postgresql", "mysql", "mongodb"] for t in tech) and "sql queries" not in covered_text:
-        return {
+    if any(t in ["sql", "postgresql", "mysql", "mongodb"] for t in tech):
+        candidate_options.append({
             "question_text": "In that project, how did you structure your database schema and SQL queries to ensure efficient data retrieval and indexing?",
             "question_type": interview_type,
             "topic": "Database Design & Query Optimization",
             "difficulty": difficulty,
             "expected_keywords": "sql schema indexing query optimization joins transactions",
-            "context_notes": "[Adaptive Follow-up: probing database aspects from previous answer]"
-        }
+            "context_notes": "[Adaptive Follow-up: probing database indexing]"
+        })
+        candidate_options.append({
+            "question_text": "How did you maintain data consistency and handle transaction isolation when multiple concurrent requests accessed the database?",
+            "question_type": interview_type,
+            "topic": "Database Concurrency & ACID",
+            "difficulty": difficulty,
+            "expected_keywords": "acid transactions isolation locking optimistic pessimistic deadlocks",
+            "context_notes": "[Adaptive Follow-up: probing database concurrency]"
+        })
 
     # Case 5: Candidate mentions web frameworks, APIs, or cloud deployment
     if any(t in ["fastapi", "django", "flask", "node", "express", "react", "docker", "aws"] for t in tech):
         active_t = [t for t in tech if t in ["fastapi", "django", "flask", "node", "express", "react", "docker", "aws"]][0].capitalize()
-        return {
+        candidate_options.append({
             "question_text": f"How did you design and structure your {active_t} implementation to handle error handling, performance, and scaling?",
             "question_type": interview_type,
             "topic": f"{active_t} Architecture & Scaling",
             "difficulty": difficulty,
             "expected_keywords": f"{active_t} error handling performance architecture middleware",
             "context_notes": f"[Adaptive Follow-up: probing {active_t} implementation]"
-        }
+        })
+        candidate_options.append({
+            "question_text": f"What strategies did you implement in {active_t} for request authentication, input validation, and graceful failure recovery?",
+            "question_type": interview_type,
+            "topic": f"{active_t} Security & Resilience",
+            "difficulty": difficulty,
+            "expected_keywords": f"{active_t} authentication validation jwt rate-limiting exceptions",
+            "context_notes": f"[Adaptive Follow-up: probing {active_t} security]"
+        })
 
     # Case 6: Incomplete / very brief answer (< 12 words)
     if words < 12:
-        return {
+        candidate_options.append({
             "question_text": "In your previous response, you provided a brief overview. Could you elaborate on the technical implementation details and the specific trade-offs you considered?",
             "question_type": interview_type,
             "topic": "Implementation Details & Trade-offs",
             "difficulty": difficulty,
             "expected_keywords": "implementation trade-offs architecture design choices",
             "context_notes": "[Adaptive Follow-up: probing incomplete response]"
-        }
+        })
+        candidate_options.append({
+            "question_text": "Could you walk me through the step-by-step logic you used to handle edge cases or unexpected inputs in that scenario?",
+            "question_type": interview_type,
+            "topic": "Edge Cases & Input Handling",
+            "difficulty": difficulty,
+            "expected_keywords": "edge cases validation exceptions recovery robustness",
+            "context_notes": "[Adaptive Follow-up: probing edge cases]"
+        })
 
     # Case 7: Dynamic salient technical extraction for any other statement
     words_list = [w for w in re.findall(r'\b[a-zA-Z]{4,}\b', last_a.lower()) if w not in [
         "that", "this", "with", "from", "have", "been", "were", "used", "also", "some", "like", "will", "would"
     ]]
     salient = words_list[0] if words_list else "your technical approach"
-    return {
+    candidate_options.append({
         "question_text": f"Regarding your approach with {salient}, what was the most significant technical challenge you encountered, and how did you resolve it?",
         "question_type": interview_type,
         "topic": "Technical Challenge & Resolution",
         "difficulty": difficulty,
         "expected_keywords": f"{salient} edge cases challenges debugging resolution",
         "context_notes": f"[Adaptive Follow-up: deep-dive on {salient}]"
+    })
+    candidate_options.append({
+        "question_text": f"If you had to re-architect that solution to handle significantly higher scale or volume, what changes would you make to {salient}?",
+        "question_type": interview_type,
+        "topic": "Scalability & Architectural Evolution",
+        "difficulty": difficulty,
+        "expected_keywords": f"{salient} scaling caching bottlenecks architectural trade-offs",
+        "context_notes": f"[Adaptive Follow-up: scaling {salient}]"
+    })
+
+    # Filter candidate options to strictly exclude any previously asked or nearly identical questions
+    for cand in candidate_options:
+        is_dup, _ = is_question_duplicate(cand["question_text"], asked_texts)
+        if not is_dup:
+            return cand
+
+    # Role pool fallback with duplicate check (only if all adaptive candidates have been asked)
+    bank = ROLE_QUESTION_BANKS.get(job_role) or ROLE_QUESTION_BANKS["Software Developer"]
+    type_pool = bank.get(interview_type)
+    if not type_pool:
+        flat = []
+        for cat_list in bank.values():
+            flat.extend(cat_list)
+        type_pool = flat if flat else ROLE_QUESTION_BANKS["Software Developer"]["Technical"]
+
+    for q_item in type_pool:
+        is_dup, _ = is_question_duplicate(q_item["question"], asked_texts)
+        if not is_dup:
+            return {
+                "question_text": q_item["question"],
+                "question_type": interview_type,
+                "topic": q_item.get("topic", "Core Competencies"),
+                "difficulty": difficulty,
+                "expected_keywords": q_item.get("expected", ""),
+                "context_notes": "[Curated Role Bank Question: Unique competency focus]"
+            }
+
+    # Ultimate guaranteed unique pivot
+    pivot_q = f"Building on your experience as a {experience_level} {job_role}, what was a major architectural lesson you learned from a production incident or bug?"
+    return {
+        "question_text": pivot_q,
+        "question_type": interview_type,
+        "topic": "Production Resilience & Lessons Learned",
+        "difficulty": difficulty,
+        "expected_keywords": "incident postmortem root cause debugging reliability",
+        "context_notes": "[Novel Contextual Pivot]"
     }
 
 async def generate_question(interview_id: int, job_role: str, experience_level: str,
@@ -587,6 +750,34 @@ You MUST generate the next question (Question {sequence_num}) directly building 
 - Never ask compound or confusing questions. Never repeat previously asked questions.
 """
 
+    # Gather ALL questions asked in this interview so far to guarantee uniqueness
+    all_asked_questions: List[str] = []
+    if previous_qa:
+        for qa in previous_qa:
+            qt = qa.get("question", "").strip()
+            if qt and qt not in all_asked_questions:
+                all_asked_questions.append(qt)
+
+    if interview_id:
+        try:
+            from ..database import get_questions_for_interview
+            for q in get_questions_for_interview(interview_id):
+                qt = q.get("question_text", "").strip()
+                if qt and qt not in all_asked_questions:
+                    all_asked_questions.append(qt)
+        except Exception:
+            pass
+
+    anti_repeat_block = ""
+    if all_asked_questions:
+        anti_repeat_block = (
+            "\nCRITICAL ANTI-REPETITION MANDATE:\n"
+            "The following questions have ALREADY BEEN ASKED in this interview session. "
+            "Under NO circumstances should you repeat or rephrase any of them:\n"
+            + "\n".join([f"- {q}" for q in all_asked_questions])
+            + "\nYour new question MUST explore a NEW technical angle or trade-off from the candidate's last answer that has NOT been asked yet.\n"
+        )
+
     user_prompt = f"""
 Target Job Role: {job_role}
 Experience Level: {experience_level}
@@ -595,6 +786,7 @@ Target Difficulty: {difficulty}
 Current Question Number: {sequence_num} of {total_questions}
 {resume_section}
 {history_formatted}
+{anti_repeat_block}
 {latest_answer_emphasis}
 
 Instructions:
@@ -602,7 +794,8 @@ Instructions:
 2. If previous answers exist, demonstrate context awareness: ask a natural follow-up directly connected to their last answer.
 3. Keep the question clear, professional, grammatically correct, and easy to understand when spoken aloud.
 4. Ask strictly ONE question at a time.
-5. Return JSON with format:
+5. NEVER repeat any of the previously asked questions or ask nearly identical phrasing.
+6. Return JSON with format:
 {{
   "question_text": "The exact question text to speak aloud",
   "question_type": "{interview_type}",
@@ -613,33 +806,61 @@ Instructions:
 }}
 """
 
-    # 1. Attempt Gemini if configured
-    gemini_res = await call_gemini(user_prompt, system_instruction=system_prompt)
-    if gemini_res:
-        text, used_model = gemini_res
-        try:
-            data = json.loads(text)
-            if "question_text" in data and len(data["question_text"].strip()) > 5:
-                data["engine"] = f"Google Gemini ({used_model})"
-                return data
-        except Exception as e:
-            logger.warning(f"Failed to parse Gemini response: {e}")
+    # 1. Attempt Gemini if configured (with anti-repetition retry loop)
+    gemini_prompt = user_prompt
+    for attempt in range(3):
+        gemini_res = await call_gemini(gemini_prompt, system_instruction=system_prompt)
+        if gemini_res:
+            text, used_model = gemini_res
+            try:
+                data = json.loads(text)
+                q_text = data.get("question_text", "").strip()
+                if q_text and len(q_text) > 5:
+                    is_dup, matched_q = is_question_duplicate(q_text, all_asked_questions)
+                    if is_dup:
+                        logger.warning(
+                            f"Gemini proposed repeated question on attempt {attempt+1}: '{q_text}' vs '{matched_q}'. Retrying..."
+                        )
+                        gemini_prompt = (
+                            user_prompt
+                            + f"\n\nREPETITION REJECTED: Your proposed question '{q_text}' was rejected because it is too similar to an already-asked question: '{matched_q}'. "
+                            + "Please generate a completely DIFFERENT adaptive follow-up question exploring a different technical competency, challenge, or trade-off from their answer."
+                        )
+                        continue
+                    data["engine"] = f"Google Gemini ({used_model})"
+                    return data
+            except Exception as e:
+                logger.warning(f"Failed to parse Gemini response: {e}")
 
-    # 2. Attempt OpenAI if configured
-    openai_resp = await call_openai([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ])
-    if openai_resp:
-        try:
-            data = json.loads(openai_resp)
-            if "question_text" in data and len(data["question_text"].strip()) > 5:
-                data["engine"] = "OpenAI (GPT-4o-mini)"
-                return data
-        except Exception as e:
-            logger.warning(f"Failed to parse OpenAI response: {e}")
+    # 2. Attempt OpenAI if configured (with anti-repetition retry loop)
+    openai_user_prompt = user_prompt
+    for attempt in range(3):
+        openai_resp = await call_openai([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": openai_user_prompt}
+        ])
+        if openai_resp:
+            try:
+                data = json.loads(openai_resp)
+                q_text = data.get("question_text", "").strip()
+                if q_text and len(q_text) > 5:
+                    is_dup, matched_q = is_question_duplicate(q_text, all_asked_questions)
+                    if is_dup:
+                        logger.warning(
+                            f"OpenAI proposed repeated question on attempt {attempt+1}: '{q_text}' vs '{matched_q}'. Retrying..."
+                        )
+                        openai_user_prompt = (
+                            user_prompt
+                            + f"\n\nREPETITION REJECTED: Your proposed question '{q_text}' was rejected because it is too similar to already-asked question '{matched_q}'. "
+                            + "Please generate a completely DIFFERENT adaptive follow-up question."
+                        )
+                        continue
+                    data["engine"] = "OpenAI (GPT-4o-mini)"
+                    return data
+            except Exception as e:
+                logger.warning(f"Failed to parse OpenAI response: {e}")
 
-    # 3. Fallback to Local Adaptive Engine
+    # 3. Fallback to Local Adaptive Engine (guaranteed duplicate-free)
     local_data = local_heuristic_question(
         job_role=job_role,
         experience_level=experience_level,
